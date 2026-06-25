@@ -29,3 +29,12 @@ cgroup:
 
 k8sServiceHost: localhost
 k8sServicePort: 7445
+
+# Hubble TLS certs are generated in-cluster by a Job instead of at `helm template`
+# time. Helm's default `genSelfSignedCert` produces fresh certs on every render,
+# which makes the rendered manifest (and thus the Talos machine_configuration_hash)
+# change on every plan/apply. `cronJob` keeps the template deterministic.
+hubble:
+  tls:
+    auto:
+      method: cronJob
