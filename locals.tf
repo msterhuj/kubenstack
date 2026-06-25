@@ -58,7 +58,10 @@ locals {
       }
       spec = {
         loadBalancerIPs = true
-        interfaces      = ["eth0"]
+        # The virtio NIC on these Talos VMs is named "ens18" (NOT eth0) — same
+        # interface the Layer2VIPConfig uses. Cilium matches this as a regex
+        # against link names; "eth0" matched nothing, so no ARP was emitted.
+        interfaces = ["ens18"]
         # Only workers can announce the IPs (not the control planes)
         nodeSelector = {
           matchExpressions = [

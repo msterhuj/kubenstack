@@ -3,6 +3,18 @@ ipam:
 
 kubeProxyReplacement: true
 
+# Enable L2 announcements so Cilium answers ARP for LoadBalancer IPs handed out
+# by the CiliumLoadBalancerIPPool (see CiliumL2AnnouncementPolicy "external").
+# Without this the IPs are assigned but unreachable (no ARP replies).
+l2announcements:
+  enabled: true
+
+# L2 announcements rely on leases (frequent API calls); raise the client rate
+# limit to avoid throttling and operator log spam.
+k8sClientRateLimit:
+  qps: 50
+  burst: 100
+
 securityContext:
   capabilities:
     ciliumAgent:

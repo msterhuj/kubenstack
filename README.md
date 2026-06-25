@@ -6,6 +6,13 @@
 - **3 workers**: `192.168.3.155`, `192.168.3.156`, `192.168.3.157`
 - **Cluster VIP / endpoint**: `https://192.168.3.150:6443`
 - **CNI**: Cilium (kube-proxy disabled, L2 load balancer on the LAN)
+- **LoadBalancer IP pool**: `192.168.3.140` – `192.168.3.149` (announced via Cilium L2 on `ens18`, workers only)
+- **Ingress**: Traefik with the Kubernetes Gateway API (GatewayClass `traefik`)
+
+Everything is deployed as code: the VMs, the Talos config, Cilium (baked into the
+Talos `inlineManifests`), and Traefik + the Gateway API CRDs (via the `helm` /
+`kubectl` Terraform providers). A single `terraform apply` brings up the whole
+stack from scratch.
 
 ## Prerequisites
 
@@ -48,6 +55,7 @@ talosctl -n 192.168.3.155 services       # services of a worker
 
 > Alternative: merge the file into `~/.talos/config` instead of using the env
 > variable.
+>
 > ```bash
 > talosctl config merge ./talosconfig
 > ```
@@ -75,10 +83,73 @@ kubectl get pods -A                # Cilium and the system components are runnin
 ### Fetching the kubeconfig without touching `~/.kube/config`
 
 ```bash
-talosctl -n 192.168.3.151kubeconfig ./kubeconfig          # write to a local file
+talosctl -n 192.168.3.151 kubeconfig ./kubeconfig         # write to a local file
 export KUBECONFIG=$(pwd)/kubeconfig
 kubectl get nodes
 ```
+
+> ⚠️ The on-disk `./kubeconfig` is **not** managed by Terraform. After a full
+> `destroy` + `apply`, the Talos PKI is regenerated (new CA), so any old
+> `./kubeconfig` becomes stale and yields
+> `x509: certificate signed by unknown authority`. Regenerate it with the command
+> above (using the fresh `talosconfig`).
+
+## 3. Ingress: Traefik + Gateway API
+
+Traefik and the [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/) are
+installed as code in [traefik.tf](traefik.tf):
+
+1. **Gateway API CRDs** (standard channel, `v1.3.0`) — applied with
+   `kubectl_manifest` (the Helm chart does not ship them).
+2. **Traefik** — installed via `helm_release` (chart `37.2.0` → Traefik `v3.5.3`)
+   with the `kubernetesGateway` provider enabled
+   ([helm/traefik-values.yaml](helm/traefik-values.yaml)). The chart auto-creates
+   a `GatewayClass` named `traefik` **and renders its own RBAC** (ServiceAccount +
+   ClusterRole with the `gateway.networking.k8s.io` rules), so the separate
+   `kubernetes-gateway-rbac.yml` step from the Sidero guide is not needed.
+
+The `helm` / `kubectl` providers connect to the live cluster using the admin
+kubeconfig that Talos generates once etcd is bootstrapped
+(`talos_cluster_kubeconfig`, see [talos.tf](talos.tf)). A
+`data.talos_cluster_health` gate makes the providers wait for the API server to
+be ready before applying, so a single `terraform apply` works without races.
+
+Versions are tunable via the `gateway_api_version` and `traefik_chart_version`
+variables.
+
+### Verifying ingress
+
+Traefik gets a LoadBalancer IP from the Cilium pool (the first free one,
+`192.168.3.140`):
+
+```bash
+kubectl get svc -n traefik traefik          # EXTERNAL-IP in 192.168.3.140-149
+```
+
+A minimal end-to-end test (see [demo.yml](demo.yml) — a `whoami` Deployment +
+`Service` + `Gateway` + `HTTPRoute`):
+
+```bash
+kubectl apply -f demo.yml
+curl http://192.168.3.140/ -H "Host: whoami.localhost"    # -> whoami response
+```
+
+> The LoadBalancer IP answers **ARP/TCP only**, not ICMP — a `ping` to it will
+> time out even when the service is reachable. Test with `curl`, not `ping`.
+
+## Notes / gotchas
+
+- **Cilium L2 load balancer**: enabled via `l2announcements.enabled: true` in
+  [helm/cilium-values.yaml](helm/cilium-values.yaml). The
+  `CiliumL2AnnouncementPolicy` announces on the `ens18` interface (the real NIC
+  name on these virtio VMs — **not** `eth0`) and only from worker nodes. The IP
+  pool is defined in [locals.tf](locals.tf).
+- **`inlineManifests` are bootstrap-only**: Cilium and the L2 policy/IP pool are
+  baked into the control-plane machine config and are applied **once at cluster
+  bootstrap**. Editing `helm/cilium-values.yaml` or `locals.tf` does **not**
+  update a running cluster — you must `terraform destroy` + `apply` (full
+  recreate) or patch the live resource. Traefik + the CRDs, managed via the
+  providers, upgrade normally.
 
 ## Reminder: (re)generating the config
 
