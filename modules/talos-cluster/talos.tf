@@ -1,44 +1,30 @@
-
 resource "talos_machine_secrets" "talos" {
   talos_version = var.talos_version
 }
 
 data "talos_machine_configuration" "controller" {
-  cluster_name     = "stacking"
-  cluster_endpoint = "https://192.168.3.150:6443" # Management VIP shared across control planes
+  cluster_name     = var.cluster_name
+  cluster_endpoint = "https://${var.vip}:6443" # Management VIP shared across control planes
   machine_type     = "controlplane"
   machine_secrets  = talos_machine_secrets.talos.machine_secrets
 
   # Base network configuration shared by all machines
   config_patches = [
     yamlencode(local.common_machine_config),
-    # Control-plane-specific configuration: VIP for high availability
-    #yamlencode({
-    #  machine = {
-    #    network = {
-    #      interfaces = [{
-    #        interface = "eth0"
-    #        vip = {
-    #          ip = "192.168.3.150"  # Virtual IP shared across the control planes
-    #        }
-    #      }]
-    #    }
-    #  }
-    #}),
     # Management VIP shared across the control planes (election via etcd).
     # NB: Layer2VIPConfig only accepts a link NAME (no deviceSelector);
     # on these virtio VMs the stable interface is "ens18".
     yamlencode({
       apiVersion = "v1alpha1"
       kind       = "Layer2VIPConfig"
-      name       = "192.168.3.150"
-      link       = "ens18"
+      name       = var.vip
+      link       = var.vip_link
     }),
     # Disable Talos' built-in CNI and kube-proxy: Cilium owns both
     # (kubeProxyReplacement). Cilium itself is NOT injected here as an
-    # inlineManifest anymore — it is a real helm_release (see cilium.tf) so that
-    # `terraform apply` reconciles upgrades/value changes (inlineManifests only
-    # apply once at bootstrap and never reconcile).
+    # inlineManifest anymore — it is a real helm_release (see the cilium module)
+    # so that `terraform apply` reconciles upgrades/value changes (inlineManifests
+    # only apply once at bootstrap and never reconcile).
     yamlencode({
       cluster = {
         network = {
@@ -56,8 +42,8 @@ data "talos_machine_configuration" "controller" {
 }
 
 data "talos_machine_configuration" "worker" {
-  cluster_name     = "stacking"
-  cluster_endpoint = "https://192.168.3.150:6443" # Management VIP shared across control planes
+  cluster_name     = var.cluster_name
+  cluster_endpoint = "https://${var.vip}:6443" # Management VIP shared across control planes
   machine_type     = "worker"
   machine_secrets  = talos_machine_secrets.talos.machine_secrets
 
@@ -68,9 +54,9 @@ data "talos_machine_configuration" "worker" {
     # applied only by the control plane at bootstrap (see controller).
   ]
 }
-#
+
 resource "talos_machine_configuration_apply" "controller" {
-  for_each             = local.talos.control
+  for_each             = local.control
   client_configuration = talos_machine_secrets.talos.client_configuration
   # The VM must exist (and be booted into maintenance mode) before we can apply
   # config to it. Making this explicit also fixes DESTROY ordering: without it,
@@ -105,7 +91,7 @@ resource "talos_machine_configuration_apply" "controller" {
             addresses = ["${each.value.address}/24"]
             routes = [{
               network = "0.0.0.0/0"
-              gateway = "192.168.3.1"
+              gateway = var.gateway
             }]
           }]
         }
@@ -115,7 +101,7 @@ resource "talos_machine_configuration_apply" "controller" {
 }
 
 resource "talos_machine_configuration_apply" "worker" {
-  for_each             = local.talos.worker
+  for_each             = local.worker
   client_configuration = talos_machine_secrets.talos.client_configuration
   # See controller resource: required for apply ordering AND for clean destroy
   # ordering (VMs torn down last, after helm/kubectl).
@@ -144,7 +130,7 @@ resource "talos_machine_configuration_apply" "worker" {
             addresses = ["${each.value.address}/24"]
             routes = [{
               network = "0.0.0.0/0"
-              gateway = "192.168.3.1"
+              gateway = var.gateway
             }]
           }]
         }
@@ -152,26 +138,27 @@ resource "talos_machine_configuration_apply" "worker" {
     }),
   ]
 }
-#
+
 ## Bootstrap etcd/control plane: run ONLY ONCE and on a SINGLE node.
 resource "talos_machine_bootstrap" "this" {
   depends_on = [talos_machine_configuration_apply.controller["01"]]
 
   client_configuration = talos_machine_secrets.talos.client_configuration
-  endpoint             = local.talos.control["01"].address
-  node                 = local.talos.control["01"].address
+  endpoint             = local.control["01"].address
+  node                 = local.control["01"].address
 }
 
 # Admin kubeconfig retrieved from the cluster once etcd is bootstrapped.
-# Consumed by the helm and kubectl providers (see provider.tf) to deploy
-# in-cluster workloads (Gateway API CRDs + Traefik, see traefik.tf).
+# Consumed by the helm and kubectl providers (configured at the root) to deploy
+# in-cluster workloads (Cilium, Gateway API CRDs + Traefik).
 resource "talos_cluster_kubeconfig" "this" {
   depends_on = [talos_machine_bootstrap.this]
 
   client_configuration = talos_machine_secrets.talos.client_configuration
-  endpoint             = local.talos.control["01"].address
-  node                 = local.talos.control["01"].address
+  endpoint             = local.control["01"].address
+  node                 = local.control["01"].address
 }
+
 # Health gate: blocks until the control plane is actually serving before any
 # in-cluster workload is applied. Without this, kubectl_manifest/helm_release
 # race the API server coming up right after bootstrap (connection refused).
@@ -186,9 +173,9 @@ data "talos_cluster_health" "this" {
   ]
 
   client_configuration = talos_machine_secrets.talos.client_configuration
-  control_plane_nodes  = [for n in local.talos.control : n.address]
-  worker_nodes         = [for n in local.talos.worker : n.address]
-  endpoints            = [for n in local.talos.control : n.address]
+  control_plane_nodes  = [for n in local.control : n.address]
+  worker_nodes         = [for n in local.worker : n.address]
+  endpoints            = [for n in local.control : n.address]
 
   skip_kubernetes_checks = true
 }
@@ -201,8 +188,8 @@ data "talos_cluster_health" "this" {
 # and the CNI install is itself gated here (chicken-and-egg).
 #
 # So poll the apiserver endpoint until it answers ANYTHING (even 401 Unauthorized
-# proves it is up). Every in-cluster resource depends on this instead of the raw
-# health check.
+# proves it is up). Every in-cluster resource depends on this (via the module's
+# output/`depends_on`) instead of the raw health check.
 resource "terraform_data" "wait_for_apiserver" {
   depends_on = [data.talos_cluster_health.this]
 

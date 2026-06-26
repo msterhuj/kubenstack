@@ -30,7 +30,7 @@ resource "proxmox_download_file" "talos_iso" {
   content_type = "iso"
   datastore_id = "local"
   file_name    = "talos-${var.talos_version}.iso"
-  node_name    = "ctrl-3"
+  node_name    = var.image_node
   overwrite    = false
   url          = "https://factory.talos.dev/image/${talos_image_factory_schematic.this.id}/${var.talos_version}/nocloud-amd64.iso"
 }
@@ -51,7 +51,7 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   timeout_stop_vm = 15
 
   efi_disk {
-    datastore_id = "zfs"
+    datastore_id = var.datastore
   }
 
   agent {
@@ -77,7 +77,7 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   }
 
   network_device {
-    bridge = "vmbr3"
+    bridge = var.network_bridge
     model  = "virtio"
   }
 
@@ -86,7 +86,7 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   }
 
   disk {
-    datastore_id = "zfs"
+    datastore_id = var.datastore
     file_format  = "raw"
     interface    = "scsi0"
     size         = 25
@@ -94,16 +94,16 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   }
 
   initialization {
-    datastore_id = "zfs"
+    datastore_id = var.datastore
 
     ip_config {
       ipv4 {
         address = "${each.value.address}/24"
-        gateway = "192.168.3.1"
+        gateway = var.gateway
       }
     }
     dns {
-      servers = ["8.8.8.8", "1.1.1.1"]
+      servers = var.nameservers
     }
   }
 }

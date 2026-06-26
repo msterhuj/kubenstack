@@ -13,8 +13,8 @@ terraform {
       version = "3.2.0"
     }
     kubectl = {
-      source  = "gavinbunney/kubectl"
-      version = "1.19.0"
+      source  = "alekc/kubectl"
+      version = "2.4.1"
     }
     http = {
       source  = "hashicorp/http"
@@ -40,27 +40,26 @@ provider "proxmox" {
 provider "talos" {}
 
 # Cluster-connected helm provider, used to install in-cluster workloads (Cilium
-# CNI, Traefik). Credentials come from the admin kubeconfig that Talos generates
-# once etcd is bootstrapped. The cert/key values are base64-encoded PEM, hence
-# the base64decode().
+# CNI, Traefik). Credentials come from the admin kubeconfig that the talos-cluster
+# module produces once etcd is bootstrapped. The cert/key values are base64-encoded
+# PEM, hence the base64decode().
 #
-# No default (cluster-less) helm provider is needed anymore: Cilium used to be
-# rendered locally via data.helm_template + a credential-less provider to dodge
-# a bootstrap dependency cycle. It is now a normal helm_release (see cilium.tf).
+# Passed into the cilium/traefik modules via their `providers` argument (those
+# modules declare `helm` in required_providers but carry no provider block).
 provider "helm" {
   alias = "cluster"
   kubernetes = {
-    host                   = talos_cluster_kubeconfig.this.kubernetes_client_configuration.host
-    client_certificate     = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.client_certificate)
-    client_key             = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.client_key)
-    cluster_ca_certificate = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.ca_certificate)
+    host                   = module.talos_cluster.kube_host
+    client_certificate     = base64decode(module.talos_cluster.kube_client_certificate)
+    client_key             = base64decode(module.talos_cluster.kube_client_key)
+    cluster_ca_certificate = base64decode(module.talos_cluster.kube_ca_certificate)
   }
 }
 
 provider "kubectl" {
-  host                   = talos_cluster_kubeconfig.this.kubernetes_client_configuration.host
-  client_certificate     = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.client_certificate)
-  client_key             = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.client_key)
-  cluster_ca_certificate = base64decode(talos_cluster_kubeconfig.this.kubernetes_client_configuration.ca_certificate)
+  host                   = module.talos_cluster.cluster_endpoint
+  client_certificate     = base64decode(module.talos_cluster.kube_client_certificate)
+  client_key             = base64decode(module.talos_cluster.kube_client_key)
+  cluster_ca_certificate = base64decode(module.talos_cluster.kube_ca_certificate)
   load_config_file       = false
 }
