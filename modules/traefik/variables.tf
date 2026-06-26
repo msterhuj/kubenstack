@@ -25,3 +25,13 @@ variable "cni_ready" {
   type        = any
   default     = null
 }
+
+variable "ccm_ready" {
+  description = <<-EOT
+    Token from the Proxmox CCM: nodes initialized (uninitialized taint removed).
+    Gates the Traefik release — its pods don't tolerate that taint, so without
+    this the helm_release would time out with pods stuck Pending until the CCM runs.
+  EOT
+  type        = any
+  default     = null
+}

@@ -50,12 +50,6 @@ variable "nodes" {
   })
 }
 
-variable "image_node" {
-  description = "Proxmox node onto which the Talos ISO is downloaded."
-  type        = string
-  default     = "ctrl-3"
-}
-
 variable "network_bridge" {
   description = "Proxmox bridge the VM NIC attaches to."
   type        = string
@@ -66,4 +60,39 @@ variable "datastore" {
   description = "Proxmox datastore for VM disks / EFI / cloud-init."
   type        = string
   default     = "zfs"
+}
+
+# ── Per-role VM sizing ───────────────────────────────────────────────────────
+variable "control_cores" {
+  description = "vCPU cores per control-plane VM (Talos recommends >=2; 4 for headroom under etcd load)."
+  type        = number
+  default     = 4
+}
+
+variable "control_memory" {
+  description = "RAM (MiB) per control-plane VM (Talos recommends >=2Gi; 4Gi for headroom)."
+  type        = number
+  default     = 4096
+}
+
+variable "worker_cores" {
+  description = "vCPU cores per worker VM."
+  type        = number
+  default     = 6
+}
+
+variable "worker_memory" {
+  description = "RAM (MiB) per worker VM."
+  type        = number
+  default     = 8192
+}
+
+variable "longhorn_disk_size" {
+  description = <<-EOT
+    Size (GiB) of the dedicated Longhorn data disk attached to each worker
+    (scsi1 → /dev/sdb, mounted at /var/lib/longhorn). Workers are the storage
+    nodes; control planes get no extra disk.
+  EOT
+  type        = number
+  default     = 100
 }

@@ -136,6 +136,19 @@ resource "talos_machine_configuration_apply" "worker" {
         }
       }
     }),
+    # Workers are the Longhorn storage nodes: partition+format the dedicated
+    # second disk (scsi1 → /dev/sdb) and mount it at /var/lib/longhorn (which the
+    # kubelet extraMount in common_machine_config then exposes to Longhorn).
+    yamlencode({
+      machine = {
+        disks = [{
+          device = "/dev/sdb"
+          partitions = [{
+            mountpoint = "/var/lib/longhorn"
+          }]
+        }]
+      }
+    }),
   ]
 }
 
@@ -159,39 +172,26 @@ resource "talos_cluster_kubeconfig" "this" {
   node                 = local.control["01"].address
 }
 
-# Health gate: blocks until the control plane is actually serving before any
-# in-cluster workload is applied. Without this, kubectl_manifest/helm_release
-# race the API server coming up right after bootstrap (connection refused).
-# skip_kubernetes_checks = true: gate on Talos/control-plane health only — the
-# full k8s checks would otherwise wait on kube-proxy, which is disabled here
-# (Cilium kubeProxyReplacement).
-data "talos_cluster_health" "this" {
+# NB: there is intentionally NO `data.talos_cluster_health` gate here.
+# We hit a hard deadlock with it: as of Talos v1.13.x a node's MachineStatus
+# stays in `booting` (unmetConditions: nodeReady) until the node is Ready, and
+# `data.talos_cluster_health` waits for "all nodes to finish boot sequence" — a
+# check that `skip_kubernetes_checks` does NOT skip. But a node only becomes Ready
+# once the CNI is in, and Cilium is installed AFTER this gate → the health check
+# never releases → apply fails with "cluster health check failed", Cilium never
+# installs, nodes stay NotReady. (Older Talos released the check before Ready,
+# which is why this used to work.)
+#
+# The apiserver poll below is the real gate and is sufficient: it proves the API
+# is serving (all in-cluster resources need that) WITHOUT requiring node Ready.
+# The kube-apiserver static pod runs hostNetwork, so it answers on the VIP before
+# any CNI exists. Every in-cluster resource depends on this via the module output.
+resource "terraform_data" "wait_for_apiserver" {
   depends_on = [
     talos_machine_configuration_apply.controller,
     talos_machine_configuration_apply.worker,
     talos_machine_bootstrap.this,
   ]
-
-  client_configuration = talos_machine_secrets.talos.client_configuration
-  control_plane_nodes  = [for n in local.control : n.address]
-  worker_nodes         = [for n in local.worker : n.address]
-  endpoints            = [for n in local.control : n.address]
-
-  skip_kubernetes_checks = true
-}
-
-# Because the health gate above skips the Kubernetes checks, it releases before
-# the kube-apiserver is actually serving on the VIP — so helm_release/kubectl_manifest
-# would race it and fail with "connection refused" on the very first apply
-# (right after bootstrap). We cannot use the full k8s checks instead: they wait
-# on nodes being Ready / kube-proxy, which never happens before the CNI is in —
-# and the CNI install is itself gated here (chicken-and-egg).
-#
-# So poll the apiserver endpoint until it answers ANYTHING (even 401 Unauthorized
-# proves it is up). Every in-cluster resource depends on this (via the module's
-# output/`depends_on`) instead of the raw health check.
-resource "terraform_data" "wait_for_apiserver" {
-  depends_on = [data.talos_cluster_health.this]
 
   # Re-run the wait whenever the cluster (and thus its endpoint/CA) is recreated.
   triggers_replace = [talos_cluster_kubeconfig.this.id]

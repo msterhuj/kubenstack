@@ -25,6 +25,10 @@ resource "terraform_data" "cni_gate" {
   input = var.cni_ready
 }
 
+resource "terraform_data" "ccm_gate" {
+  input = var.ccm_ready
+}
+
 # ── Step 1: Gateway API CRDs ────────────────────────────────────────────────
 # The download (hashicorp/http, no cluster config) reads at plan. We split the
 # multi-doc YAML in PURE HCL rather than via data.kubectl_file_documents: that
@@ -72,9 +76,12 @@ resource "helm_release" "traefik" {
 
   # Traefik pods need pod networking to become Ready — Cilium must be in first
   # (cni_gate). The Gateway API CRDs must also exist before the chart renders
-  # Gateway resources.
+  # Gateway resources. And nodes must be CCM-initialized (ccm_gate): Traefik does
+  # not tolerate the uninitialized taint, so until the CCM clears it the pods stay
+  # Pending and this release would time out.
   depends_on = [
     kubectl_manifest.gateway_api_crds,
     terraform_data.cni_gate,
+    terraform_data.ccm_gate,
   ]
 }

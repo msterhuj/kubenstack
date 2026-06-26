@@ -3,3 +3,5 @@
 .terraform/
 talosconfig
 kubeconfig
+.tfui/
+*.log

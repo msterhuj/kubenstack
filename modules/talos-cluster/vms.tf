@@ -6,7 +6,6 @@ data "talos_image_factory_extensions_versions" "this" {
       "qemu-guest-agent",
       "iscsi-tools",
       "util-linux-tools",
-      "netbird",
       "nfs-utils",
       "nfsd"
     ]
@@ -26,11 +25,16 @@ resource "talos_image_factory_schematic" "this" {
   )
 }
 
+# The ISO datastore ("local") is node-local, NOT shared — so a VM can only boot an
+# ISO present on ITS OWN Proxmox host. Download the image once per distinct host the
+# topology places VMs on; each VM references the copy on its own node (cdrom below).
 resource "proxmox_download_file" "talos_iso" {
+  for_each = toset([for v in local.vms : v.node])
+
   content_type = "iso"
   datastore_id = "local"
   file_name    = "talos-${var.talos_version}.iso"
-  node_name    = var.image_node
+  node_name    = each.value
   overwrite    = false
   url          = "https://factory.talos.dev/image/${talos_image_factory_schematic.this.id}/${var.talos_version}/nocloud-amd64.iso"
 }
@@ -48,18 +52,22 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   machine         = "q35"
   scsi_hardware   = "virtio-scsi-pci"
   stop_on_destroy = true
-  timeout_stop_vm = 15
+  timeout_stop_vm = 60 # 15s was too short — qmstop timed out on destroy, leaving VMs behind
 
   efi_disk {
     datastore_id = var.datastore
   }
 
+  # QEMU guest agent: lets Proxmox read the VM's IP, do graceful shutdown, and
+  # fs-freeze. The qemu-guest-agent extension is baked into the node image
+  # (schematic above), so the agent actually runs inside Talos.
   agent {
-    enabled = false
+    enabled = true
   }
 
   memory {
-    dedicated = 2048
+    # Workers are sized for Longhorn + workloads; control planes stay small.
+    dedicated = each.value.role == "worker" ? var.worker_memory : var.control_memory
     floating  = 0
   }
 
@@ -68,7 +76,7 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   }
 
   cpu {
-    cores = 2
+    cores = each.value.role == "worker" ? var.worker_cores : var.control_cores
     type  = "x86-64-v2-AES" # maybe try with host
   }
 
@@ -82,15 +90,30 @@ resource "proxmox_virtual_environment_vm" "talos_nodes" {
   }
 
   cdrom {
-    file_id = proxmox_download_file.talos_iso.id
+    # ISO copy on THIS VM's own Proxmox host (local datastore is not shared).
+    file_id = proxmox_download_file.talos_iso[each.value.node].id
   }
 
+  # OS / Talos system disk (→ /dev/sda; machine.install.disk pins the install here).
   disk {
     datastore_id = var.datastore
     file_format  = "raw"
     interface    = "scsi0"
     size         = 25
     cache        = "writethrough"
+  }
+
+  # Dedicated Longhorn data disk on workers only (→ /dev/sdb, mounted at
+  # /var/lib/longhorn by the worker machine config). Control planes get none.
+  dynamic "disk" {
+    for_each = each.value.role == "worker" ? [1] : []
+    content {
+      datastore_id = var.datastore
+      file_format  = "raw"
+      interface    = "scsi1"
+      size         = var.longhorn_disk_size
+      cache        = "writethrough"
+    }
   }
 
   initialization {
