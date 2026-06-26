@@ -90,6 +90,4 @@ locals {
       }
     }
   ]
-  # Convert to YAML for the inlineManifests
-  cilium_external_lb_manifest = join("---\n", [for d in local.cilium_manifest_objects : yamlencode(d)])
 }

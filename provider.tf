@@ -39,16 +39,14 @@ provider "proxmox" {
 
 provider "talos" {}
 
-# Default helm provider: NO cluster connection on purpose. It is only used by
-# data.helm_template.cilium to render manifests locally (baked into the Talos
-# machine config). Wiring cluster credentials here would create a dependency
-# cycle (kubeconfig <- bootstrap <- machineconfig <- helm_template <- provider).
-provider "helm" {}
-
-# Cluster-connected helm provider, used to install workloads into the live
-# cluster (Traefik). Credentials come from the admin kubeconfig that Talos
-# generates once etcd is bootstrapped. The cert/key values are base64-encoded
-# PEM, hence the base64decode().
+# Cluster-connected helm provider, used to install in-cluster workloads (Cilium
+# CNI, Traefik). Credentials come from the admin kubeconfig that Talos generates
+# once etcd is bootstrapped. The cert/key values are base64-encoded PEM, hence
+# the base64decode().
+#
+# No default (cluster-less) helm provider is needed anymore: Cilium used to be
+# rendered locally via data.helm_template + a credential-less provider to dodge
+# a bootstrap dependency cycle. It is now a normal helm_release (see cilium.tf).
 provider "helm" {
   alias = "cluster"
   kubernetes = {

@@ -37,8 +37,9 @@ resource "kubectl_manifest" "gateway_api_crds" {
   yaml_body         = each.value
   server_side_apply = true
 
-  # Wait for the API server to be up before applying (see talos.tf).
-  depends_on = [data.talos_cluster_health.this]
+  # Wait until the apiserver actually answers on the VIP before applying
+  # (the raw health check releases too early — see talos.tf).
+  depends_on = [terraform_data.wait_for_apiserver]
 }
 
 # ── Step 2: Traefik via Helm ────────────────────────────────────────────────
@@ -57,5 +58,10 @@ resource "helm_release" "traefik" {
   depends_on = [
     data.talos_cluster_health.this,
     kubectl_manifest.gateway_api_crds,
+    # Traefik pods need pod networking to become Ready — Cilium must be in
+    # first. (Used to be guaranteed by Cilium's bootstrap inlineManifest; now
+    # that Cilium is a helm_release gated on the same health check, make the
+    # ordering explicit or helm_release.traefik's wait would race/time out.)
+    helm_release.cilium,
   ]
 }
